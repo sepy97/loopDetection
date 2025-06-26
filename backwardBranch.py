@@ -85,15 +85,20 @@ def detect_loops_from_list(trace_list):
         # Only process taken branches
         if e['direction'] != 1:
             continue
+        # Only process conditional branches
+        #if e['type'] != 'conditional':
+        #    continue
 
-        tgt = e.get('target', e.get('next_pc'))
+        # tgt should be the pc of next instruction, not something defined in this branch
+        tgt = trace_list[idx+1]['pc'] if idx + 1 < len(trace_list) else None
+
         if tgt is None:
             continue
         tgt = int(tgt, 0)
 
         # Detect a backward taken branch
         if tgt < pc:
-            key = tgt  # Now distinguishing loops by the target pc only
+            key = (pc, tgt)
 
             if key not in loops:
                 loops[key] = {
@@ -146,8 +151,13 @@ def annotate_loops_with_cond_outcomes(loops, trace_list):
         for iteration in loop['iterations']:
             recs = trace_list[iteration['start'] : iteration['end'] + 1]
             iteration['pcs'] = [int(rec['pc'], 0) for rec in recs if rec['type'] == 'conditional']
-            iteration['cond_outcomes'] = ''.join('1' if rec['direction'] == 1 else '0'
+            cond_outcomes = ''.join('1' if rec['direction'] == 1 else '0'
                                                  for rec in recs if rec['type'] == 'conditional')
+            # trace is an integer encoding of the cond_outcomes
+            trace = int(cond_outcomes, 2) if cond_outcomes else -1
+            iteration['cond_outcomes'] = (cond_outcomes if len(cond_outcomes) < 17 else "-1")
+            iteration['trace'] = trace
+
             # Optionally remove boundaries:
             del iteration['start']
             del iteration['end']
@@ -174,33 +184,23 @@ def find_backward_branches(branch_seq):
     """
     unique = set()
     unique_branches = []
-    for entry in branch_seq:
-        if entry['direction'] == 1:  # Only consider taken branches
-            target_pc = int(entry.get('target', entry.get('next_pc')), 0)
-            current_pc = int(entry['pc'], 0)
-            if target_pc < current_pc:
-                if target_pc not in unique:
-                    unique.add(target_pc)
-                    unique_branches.append(entry)
+    for idx, entry in enumerate(branch_seq):
+        if idx + 1 >= len(branch_seq):
+            continue
+        current_pc = int(entry['pc'], 0)
+        target_pc = int(branch_seq[idx + 1]['pc'], 0)
+        if target_pc < current_pc:
+            key = (current_pc, target_pc)
+            if key not in unique:
+                unique.add(key)
+                unique_branches.append(entry)
     print(f"Found {len(unique_branches)} unique backward branches.")
+    for branch in unique_branches:
+        idx = branch_seq.index(branch)
+        pc = int(branch['pc'], 0)
+        tgt = int(branch_seq[idx + 1]['pc'], 0) if idx + 1 < len(branch_seq) else None
+        print(f"Branch pc: {hex(pc)}, Target pc: {hex(tgt) if tgt is not None else 'N/A'}")
     return unique_branches
-
-def detect_backward_branches(loop):
-    """
-    Detect if any iteration in the loop has backward branches
-    i.e. next pc is less than the current pc
-    """
-    for iteration in loop['iterations']:
-        pcs = iteration['pcs']
-        if not pcs:
-            continue
-        # Check if pc is greater than next pc
-        if len(pcs) < 20:
-            continue
-        for  i in range(2, len(pcs)-1):
-            if pcs[i] < pcs[i-1]:
-                return True
-    return False
 
 def detect_duplicate_pcs(loop):
     """
@@ -212,8 +212,8 @@ def detect_duplicate_pcs(loop):
             continue
         # Check for duplicates
         pc_counts = Counter(pcs)
-        if any(count > 1 for count in pc_counts.values()):
-            #print(f"Duplicate PCs found in iteration: {pcs}")
+        if any(count > 8 for count in pc_counts.values()):
+            print(f"Duplicate PCs found in iteration: {pcs}")
             return True
 
     return False
@@ -224,21 +224,21 @@ def filter_outer_loops(loops): #, branch_seq):
     An outer loop is defined as one that has no backward branches within its iterations.
     """
     filtered_loops = []
-    #TODO: parallelize this loop
-    for loop in loops:
-        # Check if there are any backward branches in the iterations
-        #has_inner_loops = detect_backward_branches(loop)
-        has_inner_loops = detect_duplicate_pcs(loop)
-        print("Processed loop with head_pc:", loop['head_pc'], "tail_pc:", loop['tail_pc'])
-        if not has_inner_loops:
-            print("Loop has no inner loop")
-            filtered_loops.append(loop)
+    with ProcessPoolExecutor() as executor:
+        future_to_loop = {executor.submit(detect_duplicate_pcs, loop): loop for loop in loops}
+        for future in as_completed(future_to_loop):
+            loop = future_to_loop[future]
+            has_inner_loops = future.result()
+            print("Processed loop with head_pc:", loop['head_pc'], "tail_pc:", loop['tail_pc'])
+            if not has_inner_loops:
+                print("Loop has no inner loop")
+                filtered_loops.append(loop)
     print(f"Filtered down to {len(filtered_loops)} innermost loops.")
     return filtered_loops
 
 if __name__ == "__main__":
-    #branch_seq = parse_branch_file('/sputnik/toIntel/cbp2025/loopDetection/fp_test.txt')
-    branch_seq = parse_branch_file('/sputnik/toIntel/cbp2025/trace_files/compress_0_traces.txt')
+    branch_seq = parse_branch_file('/sputnik/toIntel/loopDetection/fp_test.txt')
+    #branch_seq = parse_branch_file('/sputnik/toIntel/cbp2025/trace_files/compress_0_traces.txt')
     print(f"Total branches parsed: {len(branch_seq)}")
     # Find all backward branches
     backward_branches = find_backward_branches(branch_seq)
@@ -247,12 +247,12 @@ if __name__ == "__main__":
     print(f"Total loops detected: {len(loops)}")
 
     loops = annotate_loops_with_cond_outcomes(loops, branch_seq)
-    
+    '''    
     loops = filter_outer_loops(loops)#, branch_seq)
     print(f"Detected {len(loops)} innermost loops!")
-
+    '''
     for loop in loops:
-            output_filename = f"/sputnik/toIntel/cbp2025/loopDetection/loop_head_{loop['head_pc']}_tail_{loop['tail_pc']}.txt"
+            output_filename = f"/sputnik/toIntel/loopDetection/loop_head_{loop['head_pc']}_tail_{loop['tail_pc']}.txt"
             with open(output_filename, 'w') as outfile:
                 outfile.write(f"Loop detected: Head {loop['head_pc']}, Tail {loop['tail_pc']}\n")
                 for idx, iteration in enumerate(loop['iterations'], 1):
