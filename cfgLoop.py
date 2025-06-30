@@ -129,9 +129,9 @@ def parse_branch_file(filename):
 
 if __name__ == "__main__":
     # Smaller datafile for testing purposes
-    branches = parse_branch_file('/sputnik/toIntel/loopDetection/fp_test.txt')
+    #branches = parse_branch_file('/sputnik/toIntel/loopDetection/fp_test.txt')
     # Larger datafile for real data collection
-    #branches = parse_branch_file('/sputnik/toIntel/cbp2025/trace_files/media_0_traces.txt')
+    branches = parse_branch_file('/sputnik/toIntel/cbp2025/trace_files/media_1_traces.txt')
 
     cfg_loops = analyze_loop_structure(branches)
 
@@ -140,6 +140,10 @@ if __name__ == "__main__":
         print(f"Loop: Head={loop['loop_head']}, Iterations={loop['iterations']}, "
               f"Cycles={loop['start_cycle']}-{loop['end_cycle']}, "
               f"Nesting={loop['nested_level']}, Body size={len(loop['loop_body_pcs'])}")
+        # print iterations for each loop in a separate file
+        with open(f"loop_{loop['loop_head']}_iterations.txt", 'w') as f:
+            for pc in loop['loop_body_pcs']:
+                f.write(f"{pc}\n")
 
 
 
