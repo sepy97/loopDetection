@@ -345,6 +345,112 @@ def encode_cfg_path(cfg, trace_pcs):
     print (f"Generated {len(path_bits)} path bits")
     return path_bits
 
+def encode_iterations(cfg, trace_pcs):
+    """
+    Traverses the CFG guided by the trace and splits the branch outcomes
+    into a list of lists, where each inner list represents one loop iteration.
+    A new iteration is detected when the execution path cycles back to a
+    basic block that has already been seen in the current iteration.
+    The last branch outcome that causes the cycle is not recorded.
+    """
+    if not trace_pcs or not cfg.blocks:
+        return []
+
+    pc_to_block_start = {
+        instr['pc']: block.start_pc
+        for block in cfg.blocks.values()
+        for instr in block.instructions
+    }
+
+    all_iterations = []
+    current_iteration_bits = []
+    visited_blocks_in_iteration = set()
+    
+    trace_idx = -1
+    current_block_pc = None
+
+    # Find the first valid starting block from the trace
+    for i, pc in enumerate(trace_pcs):
+        if pc in pc_to_block_start:
+            trace_idx = i
+            current_block_pc = pc_to_block_start[pc]
+            break
+    
+    if current_block_pc is None:
+        return []
+
+    # Traverse the CFG
+    while trace_idx < len(trace_pcs):
+        # Check if we've cycled back, indicating a new iteration
+        if current_block_pc in visited_blocks_in_iteration:
+            if current_iteration_bits:
+                all_iterations.append(current_iteration_bits)
+            current_iteration_bits = []
+            visited_blocks_in_iteration.clear()
+
+        visited_blocks_in_iteration.add(current_block_pc)
+        
+        block = cfg.blocks.get(current_block_pc)
+        if not block:
+            break
+
+        next_block_pc = None
+        if len(block.successors) == 2:
+            succ0, succ1 = block.successors
+            
+            next_block_in_trace = None
+            next_trace_idx = -1
+            for i in range(trace_idx + 1, len(trace_pcs)):
+                pc = trace_pcs[i]
+                if pc in pc_to_block_start:
+                    b_pc = pc_to_block_start[pc]
+                    if b_pc == succ0 or b_pc == succ1:
+                        next_block_in_trace = b_pc
+                        next_trace_idx = i
+                        break
+            
+            # Check if this branch will cause a cycle.
+            is_cycle_branch = next_block_in_trace in visited_blocks_in_iteration
+
+            if next_block_in_trace == succ1:
+                # Only record the bit if it's not the one closing the loop.
+                if not is_cycle_branch:
+                    current_iteration_bits.append(1)
+                next_block_pc = succ1
+            elif next_block_in_trace == succ0:
+                # Only record the bit if it's not the one closing the loop.
+                if not is_cycle_branch:
+                    current_iteration_bits.append(0)
+                next_block_pc = succ0
+            
+            if next_block_in_trace:
+                trace_idx = next_trace_idx
+            else:
+                break
+
+        elif len(block.successors) == 1:
+            next_block_pc = block.successors[0]
+            found_next = False
+            for i in range(trace_idx + 1, len(trace_pcs)):
+                pc = trace_pcs[i]
+                if pc in pc_to_block_start and pc_to_block_start[pc] == next_block_pc:
+                    trace_idx = i
+                    found_next = True
+                    break
+            if not found_next:
+                break
+        else:
+            break
+
+        current_block_pc = next_block_pc
+        if current_block_pc is None:
+            break
+
+    if current_iteration_bits:
+        all_iterations.append(current_iteration_bits)
+        
+    return all_iterations
+
 if __name__ == '__main__':
     file_to_analyze = "/sputnik/toIntel/cbp2025/fp_full.csv"
 
@@ -374,6 +480,7 @@ if __name__ == '__main__':
         else:
             print("  No loops were detected in the provided trace.")
 
-    traceIDs = encode_cfg_path(cfg, [instr['pc'] for instr in instructions])
+    #traceIDs = encode_cfg_path(cfg, [instr['pc'] for instr in instructions])
+    traceIDs = encode_iterations(cfg, [instr['pc'] for instr in instructions])
     print("\n[3] Encoded CFG Path (0s and 1s):")
     print(f"  {traceIDs}")
