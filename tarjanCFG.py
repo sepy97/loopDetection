@@ -1,0 +1,289 @@
+import io
+import os
+
+class BasicBlock:
+    """
+    Represents a basic block in the Control Flow Graph.
+    A basic block is a sequence of straight-line code with no branches in,
+    except to the entry, and no branches out, except at the exit.
+    """
+    def __init__(self, start_pc):
+        self.start_pc = start_pc
+        self.end_pc = None
+        self.instructions = []
+        # Successors are identified by their start_pc
+        self.successors = []
+
+    def __repr__(self):
+        return f"BasicBlock(start_pc={hex(self.start_pc)}, end_pc={hex(self.end_pc) if self.end_pc else 'N/A'})"
+
+class CFG:
+    """
+    Represents the Control Flow Graph.
+    It contains a dictionary of basic blocks, indexed by their starting PC.
+    """
+    def __init__(self):
+        self.blocks = {}
+        self.start_node = None
+
+    def add_block(self, block):
+        """Adds a basic block to the CFG."""
+        if not self.blocks:
+            self.start_node = block.start_pc
+        self.blocks[block.start_pc] = block
+
+    def find_loops(self):
+        """
+        Finds all loops in the CFG using Tarjan's algorithm for finding
+        Strongly Connected Components (SCCs). Each SCC with more than one node,
+        or a single node with a self-edge, represents a loop.
+        """
+        if not self.blocks:
+            return []
+
+        self.index = 0
+        self.stack = []
+        self.on_stack = set()
+        self.indices = {}
+        self.low_link = {}
+        self.sccs = []
+
+        for node_pc in self.blocks:
+            if node_pc not in self.indices:
+                self._tarjan(node_pc)
+
+        # Filter SCCs to find only those that represent loops
+        loops = []
+        for scc in self.sccs:
+            is_loop = False
+            if len(scc) > 1:
+                is_loop = True
+            elif len(scc) == 1:
+                # A single-node SCC is a loop if it has a self-edge
+                node = scc[0]
+                if node in self.blocks.get(node, BasicBlock(0)).successors:
+                    is_loop = True
+            
+            if is_loop:
+                loops.append(scc)
+        
+        return loops
+
+    def _tarjan(self, node_pc):
+        """Recursive helper for Tarjan's algorithm."""
+        self.indices[node_pc] = self.index
+        self.low_link[node_pc] = self.index
+        self.index += 1
+        self.stack.append(node_pc)
+        self.on_stack.add(node_pc)
+
+        block = self.blocks.get(node_pc)
+        if not block:
+            return
+
+        for successor_pc in block.successors:
+            if successor_pc not in self.indices:
+                # Successor has not yet been visited, recurse on it
+                self._tarjan(successor_pc)
+                self.low_link[node_pc] = min(self.low_link[node_pc], self.low_link[successor_pc])
+            elif successor_pc in self.on_stack:
+                # Successor is on the stack and hence in the current SCC
+                self.low_link[node_pc] = min(self.low_link[node_pc], self.indices[successor_pc])
+
+        # If node_pc is a root node, pop the stack and generate an SCC
+        if self.low_link[node_pc] == self.indices[node_pc]:
+            scc = []
+            while True:
+                node = self.stack.pop()
+                self.on_stack.remove(node)
+                scc.append(node)
+                if node == node_pc:
+                    break
+            self.sccs.append(scc)
+
+
+def parse_trace_data(filepath):
+    """
+    Parses a CSV trace file into a list of structured instructions.
+    This version is more robust and handles malformed lines.
+    """
+    instructions = []
+    try:
+        with open(filepath, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                parts = [p.strip() for p in line.split(';')]
+                
+                # A valid line must have at least 4 parts.
+                if len(parts) < 4:
+                    print(f"Warning: Skipping malformed line #{line_num}: '{line}'")
+                    continue
+
+                try:
+                    instruction = {
+                        'seq': int(parts[0]),
+                        'type': parts[1],
+                        'pc': int(parts[2], 16),
+                        'target_pc': int(parts[3], 16)
+                    }
+                    if instruction['type'] == 'conditional branch':
+                        # Conditional branches need a 5th part.
+                        if len(parts) < 5:
+                            print(f"Warning: Skipping malformed conditional branch on line #{line_num}: '{line}'")
+                            continue
+                        instruction['taken'] = int(parts[4])
+                    instructions.append(instruction)
+                except (ValueError, IndexError) as e:
+                    # Catch errors from int() conversion or if a part is missing.
+                    print(f"Warning: Skipping malformed line #{line_num}: '{line}'. Reason: {e}")
+                    continue
+                    
+    except FileNotFoundError:
+        print(f"Error: The file '{filepath}' was not found.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while parsing the file: {e}")
+        return None
+        
+    return instructions
+
+def build_cfg_from_instructions(instructions):
+    """
+    Builds a Control Flow Graph from a list of parsed instructions.
+    This version correctly handles dynamic traces by first creating a static
+    representation of the code, then building blocks in PC order.
+    """
+    cfg = CFG()
+    if not instructions:
+        return cfg
+
+    # Create a static, unique mapping of PC to instruction.
+    # This is crucial because a dynamic trace may execute the same instruction multiple times.
+    # We sort by PC to process the code in its static layout order.
+    unique_instructions = {instr['pc']: instr for instr in instructions}
+    sorted_pcs = sorted(unique_instructions.keys())
+
+    # --- 1. Identify Leaders ---
+    # A leader is the first instruction of a basic block.
+    leaders = set()
+    if sorted_pcs:
+        # The very first instruction is a leader.
+        leaders.add(sorted_pcs[0])
+
+    for pc in sorted_pcs:
+        instr = unique_instructions[pc]
+        # Any instruction that is the target of a branch is a leader.
+        if 'branch' in instr['type']:
+            target_pc = instr.get('target_pc')
+            if target_pc in unique_instructions:
+                leaders.add(target_pc)
+            
+            # The instruction immediately following a branch is also a leader.
+            # Find the instruction that would normally execute next.
+            current_pc_index = sorted_pcs.index(pc)
+            if current_pc_index + 1 < len(sorted_pcs):
+                fallthrough_pc = sorted_pcs[current_pc_index + 1]
+                leaders.add(fallthrough_pc)
+
+    # --- 2. Create and Populate Basic Blocks ---
+    sorted_leaders = sorted(list(leaders))
+    leader_map = {leader: i for i, leader in enumerate(sorted_leaders)}
+
+    for i, leader_pc in enumerate(sorted_leaders):
+        block = BasicBlock(leader_pc)
+        
+        # Determine the end of the block. It ends right before the next leader.
+        next_leader_pc = None
+        if i + 1 < len(sorted_leaders):
+            next_leader_pc = sorted_leaders[i+1]
+
+        # Add all instructions from the current leader up to the next leader.
+        current_pc_index = sorted_pcs.index(leader_pc)
+        for j in range(current_pc_index, len(sorted_pcs)):
+            instr_pc = sorted_pcs[j]
+            if next_leader_pc and instr_pc >= next_leader_pc:
+                break
+            block.instructions.append(unique_instructions[instr_pc])
+        
+        if block.instructions:
+            block.end_pc = block.instructions[-1]['pc']
+        
+        cfg.add_block(block)
+
+    # --- 3. Connect Successors ---
+    for block in cfg.blocks.values():
+        if not block.instructions:
+            continue
+        
+        last_instr = block.instructions[-1]
+        
+        # Find the PC of the instruction that would execute next if no branch is taken.
+        current_pc_index = sorted_pcs.index(last_instr['pc'])
+        fallthrough_pc = None
+        if current_pc_index + 1 < len(sorted_pcs):
+            fallthrough_pc = sorted_pcs[current_pc_index + 1]
+
+        if last_instr['type'] == 'regular':
+            if fallthrough_pc in cfg.blocks:
+                block.successors.append(fallthrough_pc)
+        
+        elif last_instr['type'] == 'branch': # Unconditional
+            target_pc = last_instr.get('target_pc')
+            if target_pc in cfg.blocks:
+                block.successors.append(target_pc)
+
+        elif last_instr['type'] == 'conditional branch':
+            # Add the branch target
+            target_pc = last_instr.get('target_pc')
+            if target_pc in cfg.blocks:
+                block.successors.append(target_pc)
+            
+            # Add the fall-through path
+            if fallthrough_pc in cfg.blocks and fallthrough_pc not in block.successors:
+                block.successors.append(fallthrough_pc)
+
+    return cfg
+
+def write_cfg_to_dot(cfg, filepath):
+    """Writes the CFG to a .dot file for visualization."""
+    with open(filepath, 'w') as f:
+        f.write("digraph CFG {\n")
+        f.write('    node [shape=box, fontname="Courier New"];\n')
+        for pc, block in cfg.blocks.items():
+            label = f"start: {hex(block.start_pc)}\nend: {hex(block.end_pc) if block.end_pc else 'N/A'}"
+            f.write(f'    "{hex(pc)}" [label="{label}"];\n')
+            for successor_pc in block.successors:
+                f.write(f'    "{hex(pc)}" -> "{hex(successor_pc)}";\n')
+        f.write("}\n")
+
+if __name__ == '__main__':
+    file_to_analyze = "/sputnik/toIntel/cbp2025/fp_full.csv"
+
+    print(f"--- Analyzing Trace from File: '{file_to_analyze}' ---")
+    instructions = parse_trace_data(file_to_analyze)
+
+    if instructions:
+        cfg = build_cfg_from_instructions(instructions)
+
+        dot_filepath = "cfg.dot"
+        write_cfg_to_dot(cfg, dot_filepath)
+        print(f"\n[+] CFG written to {dot_filepath}")
+
+        print("\n[1] Constructed Basic Blocks:")
+        for pc, block in sorted(cfg.blocks.items()):
+            print(f"  - {block}")
+            print(f"    Successors: {[hex(s) for s in block.successors]}")
+
+        loops = cfg.find_loops()
+
+        print("\n[2] Detected Loops:")
+        if loops:
+            for i, loop in enumerate(loops):
+                print(f"  Loop #{i+1}:")
+                hex_loop = [hex(pc) for pc in loop]
+                print(f"    Basic Blocks (by start_pc): {' -> '.join(hex_loop)}")
+        else:
+            print("  No loops were detected in the provided trace.")
