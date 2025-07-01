@@ -259,6 +259,92 @@ def write_cfg_to_dot(cfg, filepath):
                 f.write(f'    "{hex(pc)}" -> "{hex(successor_pc)}";\n')
         f.write("}\n")
 
+def encode_cfg_path(cfg, trace_pcs):
+    """
+    Encodes the path taken through the CFG as a sequence of 0s and 1s.
+    This function traverses the CFG block by block, using the trace_pcs list
+    only to resolve conditional branches.
+    """
+    if not trace_pcs or not cfg.blocks:
+        return []
+
+    # Create a map from any PC to the starting PC of its containing block.
+    pc_to_block_start = {
+        instr['pc']: block.start_pc
+        for block in cfg.blocks.values()
+        for instr in block.instructions
+    }
+
+    path_bits = []
+    trace_idx = -1
+    current_block_pc = None
+
+    # 1. Find the first PC in the trace that exists in our CFG to start traversal.
+    for i, pc in enumerate(trace_pcs):
+        if pc in pc_to_block_start:
+            trace_idx = i
+            current_block_pc = pc_to_block_start[pc]
+            break
+    
+    if current_block_pc is None:
+        print("Could not find a starting point in the trace that maps to the CFG.")
+        return []
+
+    print (f"Starting CFG traversal from block at PC {hex(current_block_pc)} and trace idx {trace_idx}")
+    print (f"The total number of instructions to go through is {len(trace_pcs)}")
+    
+    # 2. Traverse the CFG, using the trace to guide decisions.
+    while trace_idx < len(trace_pcs):
+        block = cfg.blocks.get(current_block_pc)
+        if not block:
+            break
+
+        # If the block is a conditional branch, decide which way to go.
+        if len(block.successors) == 2:
+            succ0, succ1 = block.successors
+            
+            # Look ahead in the trace to find the next block that was executed.
+            next_block_in_trace = None
+            for i in range(trace_idx + 1, len(trace_pcs)):
+                next_pc_in_trace = trace_pcs[i]
+                if next_pc_in_trace in pc_to_block_start:
+                    next_block_in_trace = pc_to_block_start[next_pc_in_trace]
+                    # Check if this next block is one of our successors.
+                    if next_block_in_trace == succ0 or next_block_in_trace == succ1:
+                        trace_idx = i # Update trace index, skipping intermediate PCs.
+                        break
+            
+            if next_block_in_trace == succ1:
+                path_bits.append(1)
+                current_block_pc = succ1
+            elif next_block_in_trace == succ0:
+                path_bits.append(0)
+                current_block_pc = succ0
+            else:
+                # Could not determine path from the rest of the trace.
+                break
+        
+        # If the block has one successor, just follow it.
+        elif len(block.successors) == 1:
+            current_block_pc = block.successors[0]
+            # We still need to advance the trace index to the start of the next block.
+            found_next_block = False
+            for i in range(trace_idx + 1, len(trace_pcs)):
+                next_pc_in_trace = trace_pcs[i]
+                if next_pc_in_trace in pc_to_block_start and pc_to_block_start[next_pc_in_trace] == current_block_pc:
+                    trace_idx = i
+                    found_next_block = True
+                    break
+            if not found_next_block:
+                break # End of trace or path diverged.
+        
+        # If the block has no successors, traversal ends.
+        else:
+            break
+            
+    print (f"Generated {len(path_bits)} path bits")
+    return path_bits
+
 if __name__ == '__main__':
     file_to_analyze = "/sputnik/toIntel/cbp2025/fp_full.csv"
 
@@ -287,3 +373,7 @@ if __name__ == '__main__':
                 print(f"    Basic Blocks (by start_pc): {' -> '.join(hex_loop)}")
         else:
             print("  No loops were detected in the provided trace.")
+
+    traceIDs = encode_cfg_path(cfg, [instr['pc'] for instr in instructions])
+    print("\n[3] Encoded CFG Path (0s and 1s):")
+    print(f"  {traceIDs}")
