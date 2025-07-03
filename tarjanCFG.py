@@ -345,15 +345,13 @@ def encode_cfg_path(cfg, trace_pcs):
     print (f"Generated {len(path_bits)} path bits")
     return path_bits
 
-def encode_iterations(cfg, trace_pcs):
+def encode_iterations(cfg, trace_pcs, loop_blocks_set):
     """
-    Traverses the CFG guided by the trace and splits the branch outcomes
-    into a list of lists, where each inner list represents one loop iteration.
-    A new iteration is detected when the execution path cycles back to a
-    basic block that has already been seen in the current iteration.
-    The last branch outcome that causes the cycle is not recorded.
+    Traverses the CFG guided by the trace and encodes branch outcomes for a *specific loop*.
+    An iteration is a sequence of branch outcomes that occurs within the basic blocks
+    defined in `loop_blocks_set`.
     """
-    if not trace_pcs or not cfg.blocks:
+    if not trace_pcs or not cfg.blocks or not loop_blocks_set:
         return []
 
     pc_to_block_start = {
@@ -381,6 +379,23 @@ def encode_iterations(cfg, trace_pcs):
 
     # Traverse the CFG
     while trace_idx < len(trace_pcs):
+        # Only process blocks that are part of the target loop
+        if current_block_pc not in loop_blocks_set:
+            # Scan forward in the trace until we re-enter the loop
+            found_next_loop_block = False
+            for i in range(trace_idx + 1, len(trace_pcs)):
+                pc = trace_pcs[i]
+                if pc in pc_to_block_start:
+                    b_pc = pc_to_block_start[pc]
+                    if b_pc in loop_blocks_set:
+                        trace_idx = i
+                        current_block_pc = b_pc
+                        found_next_loop_block = True
+                        break
+            if not found_next_loop_block:
+                break # Reached end of trace without re-entering the loop
+            continue
+
         # Check if we've cycled back, indicating a new iteration
         if current_block_pc in visited_blocks_in_iteration:
             if current_iteration_bits:
@@ -409,16 +424,13 @@ def encode_iterations(cfg, trace_pcs):
                         next_trace_idx = i
                         break
             
-            # Check if this branch will cause a cycle.
             is_cycle_branch = next_block_in_trace in visited_blocks_in_iteration
 
             if next_block_in_trace == succ1:
-                # Only record the bit if it's not the one closing the loop.
                 if not is_cycle_branch:
                     current_iteration_bits.append(1)
                 next_block_pc = succ1
             elif next_block_in_trace == succ0:
-                # Only record the bit if it's not the one closing the loop.
                 if not is_cycle_branch:
                     current_iteration_bits.append(0)
                 next_block_pc = succ0
@@ -451,11 +463,35 @@ def encode_iterations(cfg, trace_pcs):
         
     return all_iterations
 
+def write_encoded_iterations_to_file(iterations, filepath):
+    """
+    Converts each list of branch outcomes (e.g., [0, 0, 1, 0]) into an 
+    integer (e.g., 2) and writes the numbers to a text file, one per line.
+    """
+    try:
+        with open(filepath, 'w') as f:
+            for bit_list in iterations:
+                if not bit_list:
+                    continue
+                # Join the list of bits into a string, e.g., [0, 0, 1, 0] -> "0010"
+                binary_string = "".join(map(str, bit_list))
+                # Convert the binary string to its integer value
+                number = int(binary_string, 2)
+                f.write(f"{number}\n")
+        print(f"\n[+] Encoded iterations successfully written to {filepath}")
+    except IOError as e:
+        print(f"\n[-] Error writing to file {filepath}: {e}")
+
 if __name__ == '__main__':
-    file_to_analyze = "/sputnik/toIntel/cbp2025/fp_full.csv"
+    # testing datafile (smaller)
+    #file_to_analyze = "/sputnik/toIntel/cbp2025/fp_full.csv"
+
+    # Larger datafile (for evaluation purposes)
+    file_to_analyze = "/sputnik/toIntel/cbp2025/media_full.csv"
 
     print(f"--- Analyzing Trace from File: '{file_to_analyze}' ---")
     instructions = parse_trace_data(file_to_analyze)
+    trace_pcs = [instr['pc'] for instr in instructions]
 
     if instructions:
         cfg = build_cfg_from_instructions(instructions)
@@ -480,7 +516,22 @@ if __name__ == '__main__':
         else:
             print("  No loops were detected in the provided trace.")
 
-    #traceIDs = encode_cfg_path(cfg, [instr['pc'] for instr in instructions])
-    traceIDs = encode_iterations(cfg, [instr['pc'] for instr in instructions])
-    print("\n[3] Encoded CFG Path (0s and 1s):")
-    print(f"  {traceIDs}")
+        print("\n[3] Encoding Iterations for Each Loop:")
+        if loops:
+            for i, loop_blocks in enumerate(loops):
+                loop_blocks_set = set(loop_blocks)
+                iterations = encode_iterations(cfg, trace_pcs, loop_blocks_set)
+                
+                print(f"\n--- Loop #{i+1} ---")
+                print(f"  Found {len(iterations)} iterations.")
+                # Print the first 5 iterations as a sample
+                for j, iter_bits in enumerate(iterations[:5]):
+                    print(f"    Iteration {j+1}: {iter_bits}")
+                if len(iterations) > 5:
+                    print(f"    ... and {len(iterations) - 5} more iterations.")
+
+                # Write the integer representation of the iterations to a file
+                output_filepath = f"loop_{i+1}_iterations.txt"
+                write_encoded_iterations_to_file(iterations, output_filepath)
+        else:
+            print("  No loops were detected in the provided trace.")
