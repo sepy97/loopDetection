@@ -465,12 +465,21 @@ def encode_iterations(cfg, trace_pcs, loop_blocks_set):
         
     return all_iterations
 
-def write_encoded_iterations_to_file(iterations, filepath):
+def write_encoded_iterations_to_file(iterations, filename, input_datafile):
     """
     Converts each list of branch outcomes (e.g., [0, 0, 1, 0]) into an 
-    integer (e.g., 2) and writes the numbers to a text file, one per line.
+    integer (e.g., 2) and writes the numbers to a text file, one per line,
+    inside a directory named after the input datafile.
     """
     try:
+        # Create a directory name from the input file (e.g., "/path/to/trace.csv" -> "trace")
+        base_name = os.path.basename(input_datafile)
+        dir_name = os.path.splitext(base_name)[0]
+        os.makedirs(dir_name, exist_ok=True)
+        
+        # Construct the full path for the output file
+        filepath = os.path.join(dir_name, filename)
+
         with open(filepath, 'w') as f:
             for bit_list in iterations:
                 if not bit_list:
@@ -537,8 +546,8 @@ def main():
                 print(f"    ... and {len(iterations) - 5} more iterations.")
 
             # Write the integer representation of the iterations to a file
-            output_filepath = f"loop_{i+1}_iterations.txt"
-            write_encoded_iterations_to_file(iterations, output_filepath)
+            output_filename = f"loop_{i+1}_iterations.txt"
+            write_encoded_iterations_to_file(iterations, output_filename, file_to_analyze)
     else:
         print("  No loops were detected in the provided trace.")
 
