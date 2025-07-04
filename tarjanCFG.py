@@ -1,5 +1,7 @@
 import io
 import os
+import sys
+import argparse
 
 class BasicBlock:
     """
@@ -481,57 +483,64 @@ def write_encoded_iterations_to_file(iterations, filepath):
         print(f"\n[+] Encoded iterations successfully written to {filepath}")
     except IOError as e:
         print(f"\n[-] Error writing to file {filepath}: {e}")
+        return
+    
+def main():
 
-if __name__ == '__main__':
-    # testing datafile (smaller)
-    #file_to_analyze = "/sputnik/toIntel/cbp2025/fp_full.csv"
+    parser = argparse.ArgumentParser(description="Analyze a trace file and extract loop iterations.")
+    parser.add_argument("input_file", help="Path to the trace CSV file to analyze")
+    args = parser.parse_args()
 
-    # Larger datafile (for evaluation purposes)
-    file_to_analyze = "/sputnik/toIntel/cbp2025/media_full.csv"
+    file_to_analyze = args.input_file
 
     print(f"--- Analyzing Trace from File: '{file_to_analyze}' ---")
     instructions = parse_trace_data(file_to_analyze)
+    if not instructions:
+        print("No instructions parsed. Exiting.")
+        return
+
     trace_pcs = [instr['pc'] for instr in instructions]
+    cfg = build_cfg_from_instructions(instructions)
 
-    if instructions:
-        cfg = build_cfg_from_instructions(instructions)
+    dot_filepath = "cfg.dot"
+    write_cfg_to_dot(cfg, dot_filepath)
+    print(f"\n[+] CFG written to {dot_filepath}")
 
-        dot_filepath = "cfg.dot"
-        write_cfg_to_dot(cfg, dot_filepath)
-        print(f"\n[+] CFG written to {dot_filepath}")
+    print("\n[1] Constructed Basic Blocks:")
+    for pc, block in sorted(cfg.blocks.items()):
+        print(f"  - {block}")
+        print(f"    Successors: {[hex(s) for s in block.successors]}")
 
-        print("\n[1] Constructed Basic Blocks:")
-        for pc, block in sorted(cfg.blocks.items()):
-            print(f"  - {block}")
-            print(f"    Successors: {[hex(s) for s in block.successors]}")
+    loops = cfg.find_loops()
 
-        loops = cfg.find_loops()
+    print("\n[2] Detected Loops:")
+    if loops:
+        for i, loop in enumerate(loops):
+            print(f"  Loop #{i+1}:")
+            hex_loop = [hex(pc) for pc in loop]
+            print(f"    Basic Blocks (by start_pc): {' -> '.join(hex_loop)}")
+    else:
+        print("  No loops were detected in the provided trace.")
 
-        print("\n[2] Detected Loops:")
-        if loops:
-            for i, loop in enumerate(loops):
-                print(f"  Loop #{i+1}:")
-                hex_loop = [hex(pc) for pc in loop]
-                print(f"    Basic Blocks (by start_pc): {' -> '.join(hex_loop)}")
-        else:
-            print("  No loops were detected in the provided trace.")
+    print("\n[3] Encoding Iterations for Each Loop:")
+    if loops:
+        for i, loop_blocks in enumerate(loops):
+            loop_blocks_set = set(loop_blocks)
+            iterations = encode_iterations(cfg, trace_pcs, loop_blocks_set)
+            
+            print(f"\n--- Loop #{i+1} ---")
+            print(f"  Found {len(iterations)} iterations.")
+            # Print the first 5 iterations as a sample
+            for j, iter_bits in enumerate(iterations[:5]):
+                print(f"    Iteration {j+1}: {iter_bits}")
+            if len(iterations) > 5:
+                print(f"    ... and {len(iterations) - 5} more iterations.")
 
-        print("\n[3] Encoding Iterations for Each Loop:")
-        if loops:
-            for i, loop_blocks in enumerate(loops):
-                loop_blocks_set = set(loop_blocks)
-                iterations = encode_iterations(cfg, trace_pcs, loop_blocks_set)
-                
-                print(f"\n--- Loop #{i+1} ---")
-                print(f"  Found {len(iterations)} iterations.")
-                # Print the first 5 iterations as a sample
-                for j, iter_bits in enumerate(iterations[:5]):
-                    print(f"    Iteration {j+1}: {iter_bits}")
-                if len(iterations) > 5:
-                    print(f"    ... and {len(iterations) - 5} more iterations.")
+            # Write the integer representation of the iterations to a file
+            output_filepath = f"loop_{i+1}_iterations.txt"
+            write_encoded_iterations_to_file(iterations, output_filepath)
+    else:
+        print("  No loops were detected in the provided trace.")
 
-                # Write the integer representation of the iterations to a file
-                output_filepath = f"loop_{i+1}_iterations.txt"
-                write_encoded_iterations_to_file(iterations, output_filepath)
-        else:
-            print("  No loops were detected in the provided trace.")
+if __name__ == '__main__':
+    main()
