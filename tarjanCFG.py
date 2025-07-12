@@ -539,6 +539,11 @@ def main():
             
             print(f"\n--- Loop #{i+1} ---")
             print(f"  Found {len(iterations)} iterations.")
+
+            if len(iterations) < 100:
+                print("    Skipping encoding: loop has fewer than 100 iterations.")
+                continue
+
             # Print the first 5 iterations as a sample
             for j, iter_bits in enumerate(iterations[:5]):
                 print(f"    Iteration {j+1}: {iter_bits}")
